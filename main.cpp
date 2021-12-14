@@ -5,21 +5,26 @@
 #include <OSCMessage.h>
 #include <heartRate.h>
 #include <NTPClient.h>
-#include <ElegantOTA.h>
-
+#include <ESP8266HTTPClient.h>
+#include <ESP8266httpUpdate.h>
+#define SIZE 1024
+#define RSIZE 128
 using namespace std;
+
 typedef struct{
-double powerVLF=0,powerLF=0,powerHF=0,BPM=0,coherence=0,phasic=0,tonic=0;
+double powerVLF=0,powerLF=0,powerHF=0,BPM=0,coherence=0,phasic=0,tonic=0,phaiscTrend=0,tonicTrend=0;
 } Data_t;
 
 /*variable dec*/
-IPAddress IP;
-int OSCPort;
+IPAddress IP(172,20,10,2);
+int OSCPort=8000;
 WiFiUDP timeUDP;
 NTPClient timeClient(timeUDP,"pool.ntp.org",19800);
+const char version[]="1.0.0.3";
+const char apiKey[]="191032aa-3103-406d-b7d8-7cbe27516aff";
 
 
- 
+
 /*Func declaration*/
 void getDatafromSensor(double rea[],double imag[],double &BPM,uint16_t size);
 void getGSRData(double rea[],double imag[],uint16_t size);
@@ -28,47 +33,64 @@ void FFT(double rea[],double imag[],unsigned int size,unsigned short int dir);
 void Magnitude(double rea[],double imag[],unsigned int size);
 void powerSpectrum(double mag[],double res[],unsigned int size);
 void OSC(Data_t data,IPAddress &IPADDR,int &P,NTPClient &client);
+void trend(Data_t &data);
 double average(double arr[],uint16_t size);
-void FirmwareUpdate();
+double average(vector<uint16_t> &vec);
+double average(vector<double> &vec);
+String getChipID();
+void updateFirmware();
 
+ //ADC_MODE(VDD33);
 void setup()
 {
  Serial.begin(115200);
- askCredentials(IP,OSCPort);
+ WiFi.setOutputPower(20.5);
+ //askCredentials(IP,OSCPort);
+ WiFi.begin("ABCDEFGH","12345678");
+ while(WiFi.status()!=WL_CONNECTED)
+ {
+   delay(300);
+ }
  timeClient.begin();
- 
+ updateFirmware();
+ Serial.println(version);
 }
 void loop()
 {
   static uint32_t previousFFTTime=0;
-  static uint32_t GSRTime=0;
+  static uint32_t GSRTime=millis();
   uint32_t entryTime;
   static Data_t data;
   static double BPM=0;
-  static double real[512];
-  static double imaginary[512];
-  static double power[512];
-  static double resisReal[128];
-  static double resisImaginary[128];
-  static double resisPower[128];
+  static double real[SIZE];
+  static double imaginary[SIZE];
+  static double power[SIZE];
+  static double resisReal[RSIZE];
+  static double resisImag[RSIZE];
+  static double resisPower[RSIZE];
+  double totalpower=0;
+  double resisTotalPower=0;
   if(WiFi.status()!=WL_CONNECTED)
   {
     ESP.reset();
   }
-  getDatafromSensor(real,imaginary,BPM,512);
-  if(millis()-GSRTime>=1000)
+  getDatafromSensor(real,imaginary,BPM,SIZE);
+  if(millis()-GSRTime>=250)
   {
-    getGSRData(resisReal,resisImaginary,256);
+     GSRTime=millis();
+     getGSRData(resisReal,resisImag,RSIZE);
   }
+  
   if(millis()-previousFFTTime>=2000)
   {
     entryTime=millis();
-    FFT(real,imaginary,512,FFT_FORWARD);
-    Magnitude(real,imaginary,512);
-    powerSpectrum(real,power,512);
-    FFT(resisReal,resisImaginary,128,FFT_FORWARD);
-    Magnitude(resisReal,resisImaginary,128);
-    powerSpectrum(resisReal,resisPower,128);
+    previousFFTTime=millis();
+    FFT(real,imaginary,SIZE,FFT_FORWARD);
+    Magnitude(real,imaginary,SIZE);
+    powerSpectrum(real,power,SIZE);
+    FFT(resisReal,resisImag,RSIZE,FFT_FORWARD);
+    Magnitude(resisReal,resisImag,RSIZE);
+    powerSpectrum(resisReal,resisPower,RSIZE);
     data.BPM=0;
     data.coherence=0;
     data.phasic=0;
@@ -76,38 +98,50 @@ void loop()
     data.powerHF=0;
     data.powerVLF=0;
     data.powerLF=0;
-    for(int i=0; i<3; i++)
+    for(int i=1; i<SIZE;i++)
+    {
+      totalpower+=power[i];
+    }
+    for(int i=0;i<RSIZE;i++)
+    {
+      resisTotalPower+=resisPower[i];
+    }
+    for(int i=1; i<6; i++)
     {
       data.powerVLF+=power[i];
     }
-    for(int i=3; i<42; i++)
+    Serial.printf("power vof %f\n",data.powerVLF);
+    data.powerVLF=isnan(data.powerVLF)?0:data.powerVLF/=totalpower;
+    for(int i=6; i<84; i++)
     {
       data.powerLF+=power[i];
     }
-    for(int i=43; i<256; i++)
+    data.powerLF=isnan(data.powerLF)? 0:data.powerLF/=totalpower;
+    for(int i=84; i<SIZE; i++)
     {
       data.powerHF+=power[i];
     }
-    for(int i=0; i<4; i++)
+    data.powerHF=isnan(data.powerHF)? 0:data.powerHF/totalpower;
+    for(int i=0; i<3;i++)
     {
       data.tonic+=resisPower[i];
     }
-    for(int i=4;i<256; i++)
+    data.tonic=isnan(data.tonic)? 0:data.tonic/resisTotalPower;
+    for(int i=3;i<RSIZE;i++)
     {
       data.phasic+=resisPower[i];
     }
-    data.coherence=data.powerLF/(data.powerVLF+data.powerHF);
+    data.phasic=isnan(data.phasic)? 0:data.phasic/resisTotalPower;
+    data.powerHF/=totalpower;
+    data.phasic=
+    data.tonic=
+    data.coherence=(data.powerVLF&&data.powerLF&&data.powerHF)?0:data.powerLF/(data.powerVLF+data.powerHF);
     data.BPM=BPM;
     Serial.println(BPM);
     OSC(data,IP,OSCPort,timeClient);
-    previousFFTTime=millis();
     Serial.printf("Done in %ld \n",millis()-entryTime);
   }
-  
-
-
- 
-}
+ }
 
 
 void getDatafromSensor(double rea[],double imag[],double &BPM,uint16_t size)
@@ -177,14 +211,15 @@ void getDatafromSensor(double rea[],double imag[],double &BPM,uint16_t size)
       BPM=NAN;
     }
   }
-   for(int i=0;i<size;i++)
+   for(unsigned int i=0;i<size;i++)
    {
      imag[i]=0;
      rea[i]=0;
    }
-   for(int i=0;i<datavec.size();i++)
+   for(unsigned int i=0;i<datavec.size();i++)
    {
      rea[i]=datavec[i];
+     //Serial.println(rea[i]);
    }
    
 }
@@ -192,38 +227,36 @@ void getDatafromSensor(double rea[],double imag[],double &BPM,uint16_t size)
 void getGSRData(double rea[],double imag[],uint16_t size)
 {
  static bool init=false;
- static vector<uint16_t> resistVec;
+ static vector<uint16_t> resisVec;
  uint16_t sample;
  if(!init)
  {
-   pinMode(PIN_A0,INPUT);
-   resistVec.reserve(size+2);
+   resisVec.reserve(128);
    init=true;
  }
- for(uint16_t i=0; i<size; i++)
+ sample=analogRead(A0);
+ for(int i=0;i<size;i++)
  {
    rea[i]=0;
    imag[i]=0;
  }
- sample=analogRead(A0);
- if(sample>50)
+ if(sample>20)
  {
-   resistVec.push_back(sample);
-   for(uint16_t i=0; i<resistVec.size();i++)
+   resisVec.push_back(sample);
+   if(resisVec.size()>128)
    {
-     rea[i]=(1024+2*resistVec[i])*10000/(512-resistVec[i]);
+     resisVec.erase(resisVec.begin());
    }
+  for(int i=0;i<resisVec.size();i++)
+  {
+    rea[i]=resisVec[i];
+  }
  }
  else
  {
-   resistVec.clear();
-   for(uint16_t i=0; i<size; i++)
-   {
-     rea[i]=INFINITY;
-   }
+   resisVec.clear();
  }
- 
- 
+
 } 
 
 void askCredentials(IPAddress &IPADDR,int &P) 
@@ -238,7 +271,7 @@ void askCredentials(IPAddress &IPADDR,int &P)
     WiFiManagerParameter OSCIP("OSC IP","OSC Port","198.162.4.1",20);
     wifiManager.addParameter(&OSCIP);
     wifiManager.addParameter(&OSCPORT);
-    wifiManager.startConfigPortal("ESP8266");
+    wifiManager.startConfigPortal("TOM Flow Compass");
     wifiManager.setConfigPortalTimeout(300);
     String ip = WiFi.localIP().toString();
     String systemIpInfo = "IP: " + ip + " Hostname: ";
@@ -270,24 +303,30 @@ void powerSpectrum(double mag[],double res[],unsigned int size)
 {
   for(unsigned int j=0; j<size; j++)
   {
-      res[j]=pow(mag[j],2)/(2*PI);
+      res[j]=pow(abs(mag[j]),2)/(2*PI);
   }
-
 }
 void OSC(Data_t data,IPAddress &IPADDR,int &P,NTPClient &client)
 {
     
     WiFiUDP Udp;
     client.update();
-    OSCMessage msg[7]={OSCMessage("/BPM"),OSCMessage("/powerVLF"),OSCMessage("/powerLF"),OSCMessage("/powerHF"),OSCMessage("/phasic"),OSCMessage("/tonic"),OSCMessage("/time")};
-    msg[0].add(data.BPM);
-    msg[1].add(data.powerVLF);
-    msg[2].add(data.powerLF);
-    msg[3].add(data.powerHF);
-    msg[4].add(data.phasic);
-    msg[5].add(data.tonic);
-    msg[5].add(client.getFormattedTime().c_str());
-    for(int i=0; i<7; i++)
+    OSCMessage msg[10]={OSCMessage("/BPM"),OSCMessage("/powerVLF"),OSCMessage("/powerLF"),OSCMessage("/powerHF"),OSCMessage("/coherence"),OSCMessage("/phasic"),OSCMessage("/tonic"),OSCMessage("phasicTrned"),OSCMessage("tonicTrend"),OSCMessage("/time")};
+    msg[0].add(float(data.BPM));
+    msg[1].add(float(data.powerVLF));
+    msg[2].add(float(data.powerLF));
+    msg[3].add(float(data.powerHF));
+    msg[4].add(float(data.coherence));
+    msg[5].add(float(data.phasic));
+    msg[6].add(float(data.tonic));
+    msg[7].add(float(data.phaiscTrend));
+    msg[8].add(float(data.tonicTrend));
+    msg[9].add(client.getFormattedTime().c_str());
+    Serial.printf("POWER VLF %lf",data.powerVLF);
+    Serial.printf("power lf %f\n",data.powerLF);
+    Serial.printf("power HF %f\n",data.powerHF);
+    Serial.printf("Coherence =%f\n",data.coherence);
+    for(int i=0; i<10; i++)
     {
     Udp.beginPacket(IPADDR,P);
     msg[i].send(Udp);
@@ -295,9 +334,7 @@ void OSC(Data_t data,IPAddress &IPADDR,int &P,NTPClient &client)
     msg[i].empty();
     }
     Serial.println("Done OSC");
-    
-
-}
+ }
 double average(double array[],uint16_t size)
 {
   double average=0;
@@ -306,4 +343,93 @@ double average(double array[],uint16_t size)
     average+=array[i];
   }
  return average/size;
+}
+double average(vector<uint16_t> &vec)
+{
+  double avg=0;
+  for(auto itr=vec.begin();itr!=vec.end();++itr)
+  {
+    avg+=*itr;
+  }
+  return avg/vec.size();
+}
+double average(vector<double> &vec)
+{
+  double avg=0;
+  for(auto itr=vec.begin();itr!=vec.end();++itr)
+  {
+    avg+=*itr;
+  }
+  return avg/vec.size();
+}
+String getChipID()
+{
+  String chipIDHex;
+  chipIDHex+=String(WiFi.macAddress());
+  return chipIDHex;
+}
+void updateFirmware()
+{
+  String url="http://otadrive.com/deviceapi/update?";
+  url+="k="+String(apiKey);
+  url+="&v="+String(version);
+  url+="&s="+getChipID();
+  Serial.println(url);
+  ESP8266HTTPUpdate httpUpdate;
+  WiFiClient Client;
+  int respCode;
+  httpUpdate.rebootOnUpdate(true);
+  respCode=httpUpdate.update(Client,url,version);
+  switch(respCode)
+  {
+    case HTTP_UPDATE_NO_UPDATES:
+    Serial.println("Already on latest version");
+    break;
+
+    case HTTP_UPDATE_OK:
+    Serial.println("Update successfull");
+    break;
+  }
+
+}
+void trend(Data_t &data)
+{
+  static bool init=false;
+  static vector<double> trendPhasicvec,trendTonicvec;
+  vector<double> gradientVec;
+  if(!init)
+  {
+    trendPhasicvec.reserve(32);
+    trendTonicvec.reserve(32);
+    init=true;
+  }
+  trendTonicvec.push_back(data.tonic);
+  trendPhasicvec.push_back(data.phasic);
+  if(trendPhasicvec.size()>32)
+  {
+    trendPhasicvec.erase(trendPhasicvec.begin());
+  }
+  if(trendTonicvec.size()>32)
+  {
+    trendTonicvec.erase(trendTonicvec.begin());
+  }
+  if(trendTonicvec.size()>1)
+  {
+    gradientVec.clear();
+    for(int i=0;i<trendTonicvec.size()-1;i++)
+    {
+      gradientVec[i]=trendTonicvec[i+1]-trendTonicvec[i];
+    }
+    data.phaiscTrend=isnan(average(gradientVec))? 0:average(gradientVec);
+  }
+  if(trendPhasicvec.size()>1)
+  {
+    gradientVec.clear();
+    for(int i=0;i<trendPhasicvec.size()-1;i++)
+    {
+      gradientVec[i]=trendPhasicvec[i+1]-trendPhasicvec[i];
+    }
+    data.tonicTrend=isnan(average(gradientVec))? 0:average(gradientVec);
+  }
+  
 }
