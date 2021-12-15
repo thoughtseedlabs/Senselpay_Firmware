@@ -45,12 +45,7 @@ void setup()
 {
  Serial.begin(115200);
  WiFi.setOutputPower(20.5);
- //askCredentials(IP,OSCPort);
- WiFi.begin("ABCDEFGH","12345678");
- while(WiFi.status()!=WL_CONNECTED)
- {
-   delay(300);
- }
+ askCredentials(IP,OSCPort)
  timeClient.begin();
  updateFirmware();
  Serial.println(version);
