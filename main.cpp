@@ -306,7 +306,7 @@ void OSC(Data_t data,IPAddress &IPADDR,int &P,NTPClient &client)
     
     WiFiUDP Udp;
     client.update();
-    OSCMessage msg[10]={OSCMessage("/BPM"),OSCMessage("/powerVLF"),OSCMessage("/powerLF"),OSCMessage("/powerHF"),OSCMessage("/coherence"),OSCMessage("/phasic"),OSCMessage("/tonic"),OSCMessage("phasicTrned"),OSCMessage("tonicTrend"),OSCMessage("/time")};
+    OSCMessage msg[10]={OSCMessage("/BPM"),OSCMessage("/powerVLF"),OSCMessage("/powerLF"),OSCMessage("/powerHF"),OSCMessage("/coherence"),OSCMessage("/phasic"),OSCMessage("/tonic"),OSCMessage("/phasicTrend"),OSCMessage("/tonicTrend"),OSCMessage("/time")};
     msg[0].add(float(data.BPM));
     msg[1].add(float(data.powerVLF));
     msg[2].add(float(data.powerLF));
