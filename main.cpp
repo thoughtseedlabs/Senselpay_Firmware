@@ -45,7 +45,12 @@ void setup()
 {
  Serial.begin(115200);
  WiFi.setOutputPower(20.5);
- askCredentials(IP,OSCPort)
+ //askCredentials(IP,OSCPort);
+ WiFi.begin("ABCDEFGH","12345678");
+ while(WiFi.status()!=WL_CONNECTED)
+ {
+   delay(300);
+ }
  timeClient.begin();
  updateFirmware();
  Serial.println(version);
@@ -54,7 +59,6 @@ void loop()
 {
   static uint32_t previousFFTTime=0;
   static uint32_t GSRTime=millis();
-  uint32_t entryTime;
   static Data_t data;
   static double BPM=0;
   static double real[SIZE];
@@ -78,7 +82,6 @@ void loop()
   
   if(millis()-previousFFTTime>=2000)
   {
-    entryTime=millis();
     previousFFTTime=millis();
     FFT(real,imaginary,SIZE,FFT_FORWARD);
     Magnitude(real,imaginary,SIZE);
@@ -105,36 +108,52 @@ void loop()
     {
       data.powerVLF+=power[i];
     }
-    Serial.printf("power vof %f\n",data.powerVLF);
-    data.powerVLF=isnan(data.powerVLF)?0:data.powerVLF/=totalpower;
+    data.powerVLF=data.powerVLF/totalpower;
     for(int i=6; i<84; i++)
     {
       data.powerLF+=power[i];
     }
-    data.powerLF=isnan(data.powerLF)? 0:data.powerLF/=totalpower;
+    data.powerLF=data.powerLF/totalpower;
     for(int i=84; i<SIZE; i++)
     {
       data.powerHF+=power[i];
     }
-    data.powerHF=isnan(data.powerHF)? 0:data.powerHF/totalpower;
+    data.powerHF=data.powerHF/totalpower;
     for(int i=0; i<3;i++)
     {
       data.tonic+=resisPower[i];
     }
-    data.tonic=isnan(data.tonic)? 0:data.tonic/resisTotalPower;
+    data.tonic=data.tonic/resisTotalPower;
     for(int i=3;i<RSIZE;i++)
     {
       data.phasic+=resisPower[i];
     }
-    data.phasic=isnan(data.phasic)? 0:data.phasic/resisTotalPower;
-    data.powerHF/=totalpower;
-    data.phasic=
-    data.tonic=
+    data.phasic=data.phasic/resisTotalPower;
+    if(isnan(data.powerVLF))
+    {
+      data.powerVLF=0;
+    }
+    if(isnan(data.powerLF))
+    {
+      data.powerLF=0;
+    }
+    if(isnan(data.powerHF))
+    {
+      data.powerHF=0;
+    }
+    if(isnan(data.phasic))
+    {
+      data.phasic=0;
+    }
+    if(isnan(data.tonic))
+    {
+      data.tonic=0;
+    }
     data.coherence=(data.powerVLF&&data.powerLF&&data.powerHF)?0:data.powerLF/(data.powerVLF+data.powerHF);
     data.BPM=BPM;
-    Serial.println(BPM);
+    trend(data);
     OSC(data,IP,OSCPort,timeClient);
-    Serial.printf("Done in %ld \n",millis()-entryTime);
+   
   }
  }
 
@@ -203,7 +222,7 @@ void getDatafromSensor(double rea[],double imag[],double &BPM,uint16_t size)
     {
       datavec.clear();
       checkForBeat(0);
-      BPM=NAN;
+      BPM=0;
     }
   }
    for(unsigned int i=0;i<size;i++)
