@@ -149,7 +149,7 @@ void loop()
     {
       data.tonic=0;
     }
-    data.coherence=(data.powerVLF&&data.powerLF&&data.powerHF)?0:data.powerLF/(data.powerVLF+data.powerHF);
+    data.coherence=(data.powerVLF>0&&data.powerLF>0&&data.powerHF>0)?0:data.powerLF/(data.powerVLF+data.powerHF);
     data.BPM=BPM;
     trend(data);
     OSC(data,IP,OSCPort,timeClient);
