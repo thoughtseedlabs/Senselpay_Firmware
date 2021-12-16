@@ -12,22 +12,22 @@
 using namespace std;
 
 typedef struct{
-double powerVLF=0,powerLF=0,powerHF=0,BPM=0,coherence=0,phasic=0,tonic=0,phaiscTrend=0,tonicTrend=0;
+double powerVLF=0,powerLF=0,powerHF=0,BPM=0,coherence=0,phasic=0,tonic=0,averageSkinVOltage=0;
 } Data_t;
 
 /*variable dec*/
-IPAddress IP(172,20,10,2);
-int OSCPort=8000;
+IPAddress IP(192,168,0,109);//type out ip
+int OSCPort=3333;
 WiFiUDP timeUDP;
 NTPClient timeClient(timeUDP,"pool.ntp.org",19800);
-const char version[]="1.0.0.3";
+const char version[]="1.0.0.5";
 const char apiKey[]="191032aa-3103-406d-b7d8-7cbe27516aff";
 
 
 
 /*Func declaration*/
 void getDatafromSensor(double rea[],double imag[],double &BPM,uint16_t size);
-void getGSRData(double rea[],double imag[],uint16_t size);
+void getGSRData(double rea[],double imag[],uint16_t size,Data_t &data);
 void askCredentials(IPAddress &IPADDR,int &P);
 void FFT(double rea[],double imag[],unsigned int size,unsigned short int dir);
 void Magnitude(double rea[],double imag[],unsigned int size);
@@ -45,12 +45,7 @@ void setup()
 {
  Serial.begin(115200);
  WiFi.setOutputPower(20.5);
- //askCredentials(IP,OSCPort);
- WiFi.begin("ABCDEFGH","12345678");
- while(WiFi.status()!=WL_CONNECTED)
- {
-   delay(300);
- }
+ askCredentials(IP,OSCPort);
  timeClient.begin();
  updateFirmware();
  Serial.println(version);
@@ -59,6 +54,7 @@ void loop()
 {
   static uint32_t previousFFTTime=0;
   static uint32_t GSRTime=millis();
+  uint32_t entryTime;
   static Data_t data;
   static double BPM=0;
   static double real[SIZE];
@@ -77,11 +73,12 @@ void loop()
   if(millis()-GSRTime>=250)
   {
      GSRTime=millis();
-     getGSRData(resisReal,resisImag,RSIZE);
+     getGSRData(resisReal,resisImag,RSIZE,data);
   }
   
   if(millis()-previousFFTTime>=2000)
   {
+    entryTime=millis();
     previousFFTTime=millis();
     FFT(real,imaginary,SIZE,FFT_FORWARD);
     Magnitude(real,imaginary,SIZE);
@@ -108,12 +105,13 @@ void loop()
     {
       data.powerVLF+=power[i];
     }
-    data.powerVLF=data.powerVLF/totalpower;
+    Serial.printf("power vof %f\n",data.powerVLF);
+    data.powerVLF=data.powerVLF/=totalpower;
     for(int i=6; i<84; i++)
     {
       data.powerLF+=power[i];
     }
-    data.powerLF=data.powerLF/totalpower;
+    data.powerLF=data.powerLF/=totalpower;
     for(int i=84; i<SIZE; i++)
     {
       data.powerHF+=power[i];
@@ -129,6 +127,8 @@ void loop()
       data.phasic+=resisPower[i];
     }
     data.phasic=data.phasic/resisTotalPower;
+    data.coherence=data.powerLF/(data.powerVLF+data.powerHF);
+    data.BPM=BPM;
     if(isnan(data.powerVLF))
     {
       data.powerVLF=0;
@@ -149,11 +149,21 @@ void loop()
     {
       data.tonic=0;
     }
-    data.coherence=(data.powerVLF>0&&data.powerLF>0&&data.powerHF>0)?0:data.powerLF/(data.powerVLF+data.powerHF);
-    data.BPM=BPM;
-    trend(data);
+    if(isnan(data.coherence))
+    {
+      data.coherence=0;
+    }
+    if(isnan(data.BPM))
+    {
+      data.BPM=0;
+    }
+    if(isnan(data.averageSkinVOltage))
+    {
+      data.averageSkinVOltage=0;
+    }
+    Serial.println(BPM);
     OSC(data,IP,OSCPort,timeClient);
-   
+    Serial.printf("Done in %ld \n",millis()-entryTime);
   }
  }
 
@@ -222,7 +232,7 @@ void getDatafromSensor(double rea[],double imag[],double &BPM,uint16_t size)
     {
       datavec.clear();
       checkForBeat(0);
-      BPM=0;
+      BPM=NAN;
     }
   }
    for(unsigned int i=0;i<size;i++)
@@ -238,7 +248,7 @@ void getDatafromSensor(double rea[],double imag[],double &BPM,uint16_t size)
    
 }
 
-void getGSRData(double rea[],double imag[],uint16_t size)
+void getGSRData(double rea[],double imag[],uint16_t size,Data_t &data)
 {
  static bool init=false;
  static vector<uint16_t> resisVec;
@@ -261,6 +271,7 @@ void getGSRData(double rea[],double imag[],uint16_t size)
    {
      resisVec.erase(resisVec.begin());
    }
+   data.averageSkinVOltage=average(resisVec);
   for(int i=0;i<resisVec.size();i++)
   {
     rea[i]=resisVec[i];
@@ -269,6 +280,7 @@ void getGSRData(double rea[],double imag[],uint16_t size)
  else
  {
    resisVec.clear();
+   data.averageSkinVOltage=0;
  }
 
 } 
@@ -325,7 +337,7 @@ void OSC(Data_t data,IPAddress &IPADDR,int &P,NTPClient &client)
     
     WiFiUDP Udp;
     client.update();
-    OSCMessage msg[10]={OSCMessage("/BPM"),OSCMessage("/powerVLF"),OSCMessage("/powerLF"),OSCMessage("/powerHF"),OSCMessage("/coherence"),OSCMessage("/phasic"),OSCMessage("/tonic"),OSCMessage("/phasicTrend"),OSCMessage("/tonicTrend"),OSCMessage("/time")};
+    OSCMessage msg[9]={OSCMessage("/BPM"),OSCMessage("/powerVLF"),OSCMessage("/powerLF"),OSCMessage("/powerHF"),OSCMessage("/coherence"),OSCMessage("/phasic"),OSCMessage("/tonic"),OSCMessage("/avgSkinvoltage"),OSCMessage("/time")};
     msg[0].add(float(data.BPM));
     msg[1].add(float(data.powerVLF));
     msg[2].add(float(data.powerLF));
@@ -333,14 +345,13 @@ void OSC(Data_t data,IPAddress &IPADDR,int &P,NTPClient &client)
     msg[4].add(float(data.coherence));
     msg[5].add(float(data.phasic));
     msg[6].add(float(data.tonic));
-    msg[7].add(float(data.phaiscTrend));
-    msg[8].add(float(data.tonicTrend));
-    msg[9].add(client.getFormattedTime().c_str());
+    msg[7].add(float(data.averageSkinVOltage));
+    msg[8].add(client.getFormattedTime().c_str());
     Serial.printf("POWER VLF %lf",data.powerVLF);
     Serial.printf("power lf %f\n",data.powerLF);
     Serial.printf("power HF %f\n",data.powerHF);
     Serial.printf("Coherence =%f\n",data.coherence);
-    for(int i=0; i<10; i++)
+    for(int i=0; i<9; i++)
     {
     Udp.beginPacket(IPADDR,P);
     msg[i].send(Udp);
@@ -405,45 +416,4 @@ void updateFirmware()
     break;
   }
 
-}
-void trend(Data_t &data)
-{
-  static bool init=false;
-  static vector<double> trendPhasicvec,trendTonicvec;
-  vector<double> gradientVec;
-  if(!init)
-  {
-    trendPhasicvec.reserve(32);
-    trendTonicvec.reserve(32);
-    init=true;
-  }
-  trendTonicvec.push_back(data.tonic);
-  trendPhasicvec.push_back(data.phasic);
-  if(trendPhasicvec.size()>32)
-  {
-    trendPhasicvec.erase(trendPhasicvec.begin());
-  }
-  if(trendTonicvec.size()>32)
-  {
-    trendTonicvec.erase(trendTonicvec.begin());
-  }
-  if(trendTonicvec.size()>1)
-  {
-    gradientVec.clear();
-    for(int i=0;i<trendTonicvec.size()-1;i++)
-    {
-      gradientVec[i]=trendTonicvec[i+1]-trendTonicvec[i];
-    }
-    data.phaiscTrend=isnan(average(gradientVec))? 0:average(gradientVec);
-  }
-  if(trendPhasicvec.size()>1)
-  {
-    gradientVec.clear();
-    for(int i=0;i<trendPhasicvec.size()-1;i++)
-    {
-      gradientVec[i]=trendPhasicvec[i+1]-trendPhasicvec[i];
-    }
-    data.tonicTrend=isnan(average(gradientVec))? 0:average(gradientVec);
-  }
-  
 }
